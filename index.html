@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>H100 MIG Architect</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="script.js" type="module" defer></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <h1>H100 MIG Architect</h1>
+            </div>
+            <p class="subtitle">AI Infrastructure Configuration Engine</p>
+        </header>
+
+        <main class="main">
+            <form id="mig-form" class="config-form">
+                <div class="form-section">
+                    <h3>Workload Profile</h3>
+                    
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label>
+                                Inference Endpoints
+                                <span class="tooltip-trigger" data-tooltip="inference">ⓘ</span>
+                            </label>
+                            <input type="number" id="inference-jobs" value="2" min="0" max="7">
+                            <span class="hint">Concurrent model serving instances</span>
+                        </div>
+
+                        <div class="input-group">
+                            <label>
+                                Training Pipelines
+                                <span class="tooltip-trigger" data-tooltip="training">ⓘ</span>
+                            </label>
+                            <input type="number" id="training-jobs" value="1" min="0" max="7">
+                            <span class="hint">Fine-tuning & training workloads</span>
+                        </div>
+                    </div>
+
+                    <div class="input-row">
+                        <div class="input-group">
+                            <label>
+                                Memory Strategy
+                                <span class="tooltip-trigger" data-tooltip="memory">ⓘ</span>
+                            </label>
+                            <select id="memory-requirement">
+                                <option value="auto">Auto-optimize</option>
+                                <option value="10">Conservative (10GB instances)</option>
+                                <option value="20">Balanced (20GB instances)</option>
+                                <option value="40">Aggressive (40GB instances)</option>
+                            </select>
+                            <span class="hint">Resource allocation approach</span>
+                        </div>
+
+                        <div class="input-group">
+                            <label>
+                                Environment
+                                <span class="tooltip-trigger" data-tooltip="environment">ⓘ</span>
+                            </label>
+                            <select id="environment">
+                                <option value="production">Production</option>
+                                <option value="development">Development</option>
+                                <option value="research">Research</option>
+                            </select>
+                            <span class="hint">Deployment target</span>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="generate-btn">
+                    <span class="btn-text">Generate Configuration</span>
+                    <span class="btn-icon">→</span>
+                </button>
+                
+                <button type="button" id="explain-issue-btn" class="explain-btn">
+                    <span class="btn-text">🤔 Explain Your Issue</span>
+                    <span class="btn-icon">💬</span>
+                </button>
+                
+                <button type="button" id="demo-btn" class="demo-btn">
+                    <span class="btn-text">Try Demo Mode</span>
+                    <span class="btn-icon">🎯</span>
+                </button>
+            </form>
+
+                <div id="loading" class="loading-state">
+                <div class="pulse-ring"></div>
+                <p>Architecting optimal configuration...</p>
+            </div>
+
+            <div id="error" class="error-state">
+                <div class="error-icon">⚠</div>
+                <p id="error-message"></p>
+            </div>
+
+            <section id="results" class="results-panel">
+                <div class="results-header">
+                    <h2>Configuration Architecture</h2>
+                    <div class="config-badge" id="config-badge"></div>
+                </div>
+
+                <div class="results-grid">
+                    <div class="result-card">
+                        <div class="card-header">
+                            <span class="card-icon">🧠</span>
+                            <h3>Strategy Analysis</h3>
+                        </div>
+                        <div class="card-content">
+                            <p id="explanation-output"></p>
+                        </div>
+                    </div>
+
+                    <div class="result-card">
+                        <div class="card-header">
+                            <span class="card-icon">⚙️</span>
+                            <h3>Implementation Commands</h3>
+                            <button id="copy-button" class="copy-btn">Copy</button>
+                        </div>
+                        <div class="card-content">
+                            <div id="commands-with-explanations"></div>
+                        </div>
+                    </div>
+
+                    <div class="result-card">
+                        <div class="card-header">
+                            <span class="card-icon">📊</span>
+                            <h3>Resource Allocation</h3>
+                        </div>
+                        <div class="card-content">
+                            <div id="resource-breakdown"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Full-width warning section -->
+                <div class="result-card warning-card full-width">
+                    <div class="card-header">
+                        <span class="card-icon">⚠️</span>
+                        <h3>Without This Solution - Risk Analysis</h3>
+                    </div>
+                    <div class="card-content">
+                        <div id="risk-analysis"></div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>Built with prompt engineering excellence</p>
+        </footer>
+
+        <!-- Tooltips -->
+        <div id="tooltip" class="tooltip hidden">
+            <div class="tooltip-content"></div>
+        </div>
+
+        <!-- Issue Explanation Modal -->
+        <div id="issue-modal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Describe Your GPU Infrastructure Challenge</h2>
+                    <button id="close-modal" class="close-btn">×</button>
+                </div>
+                <div class="modal-body">
+                    <textarea id="issue-description" placeholder="Describe your situation, for example:
+                    
+• 'We have 3 different AI models that need to run simultaneously for our customers, but they keep interfering with each other'
+• 'Our training jobs are taking forever and blocking our inference services'  
+• 'We need to isolate customer workloads but don't know how to partition our H100'
+• 'Our development team can't experiment because production workloads are using all GPU memory'
+
+Be specific about your challenges - the more details, the better configuration we can suggest!"></textarea>
+                    <button id="analyze-issue" class="analyze-btn">
+                        <span class="btn-text">🔍 Analyze & Configure</span>
+                        <span class="btn-icon">→</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+</main>
+
+<footer>
+    <p>A one-shot prompt project by Altaf.</p>
+</footer>
+
+</body>
+</html>
