@@ -47,13 +47,22 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // Make request to OpenAI with proper system context
+        // Make request to OpenAI with enhanced system context
         const messages = type === 'analysis' ? 
-            [{ role: "user", content: prompt }] :
             [
                 {
                     role: "system",
-                    content: "You are a Senior DevOps Engineer specializing in NVIDIA GPU infrastructure and MIG partitioning. You have 10+ years of experience with production AI clusters. You always provide complete, production-ready configurations with detailed explanations."
+                    content: "You are the world's leading expert in NVIDIA GPU infrastructure and MIG partitioning. You have architected production AI clusters for Fortune 500 companies, prevented millions in downtime, and optimized GPU efficiency across thousands of deployments. You always return precise, well-structured JSON responses for infrastructure analysis."
+                },
+                {
+                    role: "user", 
+                    content: prompt 
+                }
+            ] :
+            [
+                {
+                    role: "system",
+                    content: "You are a Senior DevOps Engineer specializing in NVIDIA GPU infrastructure and MIG partitioning. You have 10+ years of experience with production AI clusters. You always provide complete, production-ready configurations with detailed explanations in perfect JSON format."
                 },
                 {
                     role: "user",
@@ -68,10 +77,10 @@ exports.handler = async (event, context) => {
                 'Authorization': `Bearer ${API_KEY}`
             },
             body: JSON.stringify({
-                model: "gpt-4",
+                model: "gpt-4o",  // Latest and most capable model
                 messages: messages,
-                temperature: 0.2,
-                max_tokens: 2000
+                temperature: 0.1,  // Lower temperature for more consistent analysis
+                max_tokens: 2500   // Increased for better detailed responses
             })
         });
 

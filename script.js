@@ -249,12 +249,12 @@ function closeIssueModal() {
 }
 
 /**
- * Analyze user issue and set form inputs
+ * Analyze user issue and set form inputs with intelligent validation
  */
 async function handleIssueAnalysis() {
     const issue = issueDescription.value.trim();
     if (!issue) {
-        alert('Please describe your issue first');
+        alert('Please describe your GPU infrastructure issue first');
         return;
     }
     
@@ -263,38 +263,11 @@ async function handleIssueAnalysis() {
     loadingDiv.classList.add('active');
     
     try {
-        const analysisPrompt = `
-**INFRASTRUCTURE PROBLEM ANALYSIS**
-
-User Issue: "${issue}"
-
-You are a Senior DevOps Engineer. Analyze this user's GPU infrastructure challenge and determine the optimal configuration parameters.
-
-Based on the description, determine:
-1. How many inference endpoints they likely need (0-7)
-2. How many training pipelines they need (0-7)  
-3. What memory strategy fits: "auto", "10", "20", or "40"
-4. What environment type: "production", "development", or "research"
-
-Also provide:
-- A strategic explanation of why this configuration solves their problem
-- Shell commands for implementation
-- Resource breakdown
-- Risk analysis of what happens if they don't fix this
-
-Respond with ONLY a JSON object:
-{
-  "config": {
-    "inferenceJobs": 2,
-    "trainingJobs": 1, 
-    "memoryReq": "auto",
-    "environment": "production"
-  },
-  "strategy": "Based on your description...",
-  "commands": "sudo nvidia-smi -mig 0\\n...",
-  "resources": {"memory_total": "60GB", "compute_units": "6", "efficiency_score": "88%"},
-  "riskAnalysis": "Without this solution, you would face..."
-}`;
+        // First, try to extract key information using pattern matching
+        const extractedInfo = extractIssuePatterns(issue);
+        
+        // Build enhanced analysis prompt with better constraints
+        const analysisPrompt = buildIntelligentAnalysisPrompt(issue, extractedInfo);
 
         const response = await fetch(API_URL, {
             method: 'POST',
@@ -314,27 +287,76 @@ Respond with ONLY a JSON object:
 
         const data = await response.json();
         const responseText = data.choices[0].message.content.trim();
-        const result = JSON.parse(responseText);
+        
+        let result;
+        try {
+            result = JSON.parse(responseText);
+        } catch (parseError) {
+            // Fallback: Use extracted patterns if AI fails
+            console.warn('AI response parsing failed, using pattern extraction:', parseError);
+            result = generateFallbackAnalysis(issue, extractedInfo);
+        }
+        
+        // Validate and sanitize the result
+        const validatedResult = validateAndSanitizeAnalysis(result, extractedInfo);
         
         // Set form inputs based on analysis
-        inferenceInput.value = result.config.inferenceJobs;
-        trainingInput.value = result.config.trainingJobs;
-        memoryRequirement.value = result.config.memoryReq;
-        environmentSelect.value = result.config.environment;
+        inferenceInput.value = validatedResult.config.inferenceJobs;
+        trainingInput.value = validatedResult.config.trainingJobs;
+        memoryRequirement.value = validatedResult.config.memoryReq;
+        environmentSelect.value = validatedResult.config.environment;
         
-        // Generate enhanced analysis with dynamic components
-        const resourceAllocation = generateResourceAllocation(result.config);
-        const dynamicRiskAnalysis = generateRiskAnalysis(result.config);
+        // ✅ REMOVED: showAnalysisExplanation() - no temporary popup needed
         
-        // Display results
-        const enhancedResult = {
-            strategy: result.strategy,
-            commands: result.commands,
-            resources: resourceAllocation,
-            riskAnalysis: dynamicRiskAnalysis
+        // ✅ FIXED: Use the validated config directly instead of separate AI call
+        console.log('🎯 Using validated config for consistent results:', validatedResult.config);
+        
+        // Generate configuration using the SAME logic as form submission
+        const formConfig = {
+            inferenceJobs: validatedResult.config.inferenceJobs,
+            trainingJobs: validatedResult.config.trainingJobs,
+            memoryReq: validatedResult.config.memoryReq,
+            environment: validatedResult.config.environment,
+            totalJobs: validatedResult.config.inferenceJobs + validatedResult.config.trainingJobs
         };
         
-        displayResults(enhancedResult, result.config);
+        // Make configuration AI call with the exact same parameters
+        const masterPrompt = buildAdvancedPrompt(formConfig);
+        
+        const configResponse = await fetch(API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                prompt: masterPrompt,
+                type: 'configuration'
+            })
+        });
+
+        if (!configResponse.ok) {
+            const errorData = await configResponse.json();
+            throw new Error(errorData.error || `Configuration API Error: ${configResponse.status}`);
+        }
+
+        const configData = await configResponse.json();
+        const configResponseText = configData.choices[0].message.content.trim();
+        
+        let configResult;
+        try {
+            configResult = JSON.parse(configResponseText);
+        } catch (parseError) {
+            // If JSON parsing fails, try to extract JSON from the response
+            const jsonMatch = configResponseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                configResult = JSON.parse(jsonMatch[0]);
+            } else {
+                throw new Error("Configuration AI returned invalid JSON format");
+            }
+        }
+        
+        // Display results using the configuration AI response
+        displayResults(configResult, formConfig);
         
         // Scroll to results
         setTimeout(() => {
@@ -342,10 +364,375 @@ Respond with ONLY a JSON object:
         }, 500);
         
     } catch (err) {
-        displayError(`Analysis Error: ${err.message}`);
+        console.error('Analysis failed:', err);
+        displayError(`Analysis Error: ${err.message}. Please try describing your issue differently or use the manual configuration.`);
     } finally {
         loadingDiv.classList.remove('active');
     }
+}
+
+/**
+ * Extract patterns from user issue description
+ */
+function extractIssuePatterns(issue) {
+    const lowerIssue = issue.toLowerCase();
+    
+    // Extract environment clues
+    let environment = 'production'; // default
+    if (lowerIssue.includes('develop') || lowerIssue.includes('test') || lowerIssue.includes('staging')) {
+        environment = 'development';
+    } else if (lowerIssue.includes('research') || lowerIssue.includes('experiment') || lowerIssue.includes('academic')) {
+        environment = 'research';
+    }
+    
+    // Extract service count clues
+    const serviceMatches = lowerIssue.match(/(\d+)\s*(service|endpoint|model|api)/g) || [];
+    const trainingMatches = lowerIssue.match(/(\d+)\s*(training|pipeline|job|experiment|student|concurrent|fine-tun|retrain)/g) || [];
+    
+    // Enhanced training detection patterns
+    const hasTrainingKeywords = lowerIssue.includes('training') || lowerIssue.includes('retrain') || 
+                               lowerIssue.includes('fine-tun') || lowerIssue.includes('pipeline') || 
+                               lowerIssue.includes('experiment') || lowerIssue.includes('student') || 
+                               lowerIssue.includes('research') || lowerIssue.includes('concurrent') ||
+                               lowerIssue.includes('weekly model') || lowerIssue.includes('model update') ||
+                               lowerIssue.includes('phd') || lowerIssue.includes('bert') || 
+                               lowerIssue.includes('vision model') || lowerIssue.includes('multimodal') ||
+                               lowerIssue.includes('autonomous') || lowerIssue.includes('classification');
+    
+    // Extract problem indicators
+    const problems = {
+        performance: lowerIssue.includes('slow') || lowerIssue.includes('latency') || lowerIssue.includes('performance'),
+        memory: lowerIssue.includes('memory') || lowerIssue.includes('ram') || lowerIssue.includes('oom'),
+        crashes: lowerIssue.includes('crash') || lowerIssue.includes('fail') || lowerIssue.includes('down'),
+        scaling: lowerIssue.includes('scale') || lowerIssue.includes('load') || lowerIssue.includes('traffic'),
+        isolation: lowerIssue.includes('interfere') || lowerIssue.includes('conflict') || lowerIssue.includes('isolat'),
+        training: hasTrainingKeywords,
+        finetuning: lowerIssue.includes('fine-tun') || lowerIssue.includes('retrain') || lowerIssue.includes('weekly model'),
+        research: lowerIssue.includes('research') || lowerIssue.includes('phd') || lowerIssue.includes('university') || lowerIssue.includes('academic')
+    };
+    
+    // Extract business context
+    const businessContext = {
+        ecommerce: lowerIssue.includes('ecommerce') || lowerIssue.includes('shop') || lowerIssue.includes('retail'),
+        fintech: lowerIssue.includes('fintech') || lowerIssue.includes('financial') || lowerIssue.includes('fraud'),
+        ai: lowerIssue.includes('chatbot') || lowerIssue.includes('llm') || lowerIssue.includes('ai'),
+        realtime: lowerIssue.includes('real-time') || lowerIssue.includes('realtime') || lowerIssue.includes('live')
+    };
+    
+    return {
+        environment,
+        serviceMatches,
+        trainingMatches,
+        problems,
+        businessContext,
+        complexity: lowerIssue.length > 200 ? 'high' : lowerIssue.length > 100 ? 'medium' : 'low'
+    };
+}
+
+/**
+ * Build intelligent analysis prompt with advanced prompt engineering
+ */
+function buildIntelligentAnalysisPrompt(issue, patterns) {
+    // Enhanced training detection context
+    const trainingContext = patterns.problems.training || patterns.problems.finetuning || patterns.problems.research
+        ? 'TRAINING WORKLOADS DETECTED - User explicitly mentions training/fine-tuning/research needs'
+        : 'No training workloads detected - focus on inference optimization';
+    
+    const matchedTraining = patterns.trainingMatches.length > 0 
+        ? `NUMERIC TRAINING REFERENCES: ${patterns.trainingMatches.join(', ')}`
+        : 'No specific training job counts mentioned';
+    
+    return `# GPU Infrastructure Analysis Expert
+
+You are the world's leading expert in NVIDIA H100 MIG configuration with 15+ years of experience architecting production AI infrastructure for Fortune 500 companies. Your configurations have prevented millions in downtime and optimized GPU efficiency across thousands of deployments.
+
+## User's Critical Infrastructure Challenge
+"${issue}"
+
+## Context Analysis
+- **Environment**: ${patterns.environment}
+- **Business Domain**: ${Object.keys(patterns.businessContext).filter(k => patterns.businessContext[k]).join(', ') || 'General AI/ML'}
+- **Critical Problems**: ${Object.keys(patterns.problems).filter(k => patterns.problems[k]).join(', ') || 'Performance optimization'}
+- **${trainingContext}**
+- **${matchedTraining}**
+
+## Mandatory Configuration Rules
+
+### Training Detection Protocol
+🔥 **CRITICAL**: Set trainingJobs > 0 if ANY of these appear:
+- "training", "retrain", "fine-tuning", "pipeline", "experiment", "retraining"
+- "weekly model", "nightly model", "model update", "research", "PhD", "student"  
+- "BERT", "vision model", "multimodal", "autonomous", "classification", "medical"
+- Numbers + "concurrent/simultaneous training/experiments/pipelines"
+- Academic contexts: "university", "research lab", "engineers working on"
+
+### Hardware Constraints (NVIDIA H100 80GB)
+- **Max 7 MIG instances total** (inference + training combined)
+- **Memory profiles**: 1g.10gb, 2g.20gb, 3g.40gb, 4g.40gb, 7g.80gb
+- **Inference needs**: 10-20GB for 7B-13B models, 20-40GB for larger models
+- **Training needs**: 20-40GB+ depending on model size and batch requirements
+
+### Deployment Environment Rules
+- **Production**: Prioritize reliability, compliance, performance isolation
+- **Research**: Maximize flexibility, experimental capability, parallel training
+- **Development**: Balance resource sharing with development velocity
+
+## Expected Configuration Patterns
+- **Small Team**: 1-2 inference, 0-1 training
+- **Medium Company**: 2-4 inference, 1-2 training  
+- **Enterprise**: 3-5 inference, 1-3 training
+- **Research Institution**: 1-3 inference, 2-4 training
+
+## Response Format
+Return ONLY valid JSON with this exact structure:
+
+\`\`\`json
+{
+  "config": {
+    "inferenceJobs": [1-5 based on services mentioned],
+    "trainingJobs": [MUST be >0 if training keywords detected, 0 only for pure inference], 
+    "memoryReq": "10|20|40|auto",
+    "environment": "${patterns.environment}"
+  },
+  "reasoning": "Based on your [specific issue], I identified [key problems] requiring [solution approach]. This configuration ensures [specific benefits].",
+  "strategy": "For your ${patterns.environment} workload, this MIG configuration creates [detailed explanation of instance allocation and isolation strategy].",
+  "confidence": "high|medium|low"
+}
+\`\`\`
+
+## Critical Success Metrics
+Your configuration must guarantee:
+✅ Zero resource conflicts between services
+✅ Training never impacts inference performance  
+✅ Optimal memory utilization for workload type
+✅ Environment-appropriate reliability and flexibility
+✅ Future scalability within H100 constraints`;
+}
+
+/**
+ * Generate fallback analysis when AI fails
+ */
+function generateFallbackAnalysis(issue, patterns) {
+    const lowerIssue = issue.toLowerCase();
+    
+    // Smart defaults based on patterns
+    let inferenceJobs = 2; // Conservative default
+    let trainingJobs = 0;  // Start with 0, only increase if training detected
+    let memoryReq = 'auto';
+    
+    // Adjust based on extracted patterns
+    if (patterns.serviceMatches.length > 0) {
+        const extractedCount = parseInt(patterns.serviceMatches[0].match(/\d+/)[0]);
+        inferenceJobs = Math.min(Math.max(extractedCount, 1), 5);
+    }
+    
+    // ✅ BETTER TRAINING DETECTION: Check multiple signals
+    if (patterns.trainingMatches.length > 0) {
+        const extractedCount = parseInt(patterns.trainingMatches[0].match(/\d+/)[0]);
+        trainingJobs = Math.min(Math.max(extractedCount, 1), 3);
+        console.log('📊 Fallback: Training count from regex:', extractedCount);
+    } else if (patterns.problems.training || patterns.problems.finetuning || patterns.problems.research) {
+        // No specific number mentioned, but training keywords detected
+        trainingJobs = patterns.environment === 'research' ? 2 : 1;
+        console.log('📊 Fallback: Training detected from keywords, setting to:', trainingJobs);
+    } else {
+        console.log('📊 Fallback: No training signals, keeping at 0');
+    }
+    
+    // Adjust for common scenarios
+    if (patterns.problems.memory && patterns.problems.crashes) {
+        memoryReq = '40'; // Need more memory per instance
+        inferenceJobs = Math.min(inferenceJobs, 2); // Fewer, larger instances
+    }
+    
+    if (patterns.problems.scaling && patterns.businessContext.ecommerce) {
+        inferenceJobs = Math.min(inferenceJobs + 1, 4); // More inference for scaling
+    }
+    
+    return {
+        config: {
+            inferenceJobs,
+            trainingJobs,
+            memoryReq,
+            environment: patterns.environment
+        },
+        reasoning: `Based on your description, I identified ${Object.keys(patterns.problems).filter(k => patterns.problems[k]).join(' and ')} issues. This configuration provides dedicated resources to prevent these problems.`,
+        strategy: `This ${patterns.environment} configuration creates ${inferenceJobs} inference instances and ${trainingJobs} training pipelines with proper isolation to address your specific challenges.`,
+        confidence: 'medium'
+    };
+}
+
+/**
+ * Validate and sanitize analysis result
+ */
+function validateAndSanitizeAnalysis(result, patterns) {
+    // Ensure valid structure
+    if (!result.config) {
+        result.config = {};
+    }
+    
+    // Validate and constrain values
+    result.config.inferenceJobs = Math.min(Math.max(parseInt(result.config.inferenceJobs) || 2, 0), 5);
+    result.config.trainingJobs = Math.min(Math.max(parseInt(result.config.trainingJobs) || 1, 0), 3);
+    
+    // ✅ IMPROVED: Only zero training jobs if DEFINITELY no training mentioned
+    // Check multiple signals: patterns, trainingMatches, and explicit keywords
+    const hasTrainingSignals = patterns.problems.training || 
+                              patterns.problems.finetuning || 
+                              patterns.problems.research ||
+                              (patterns.trainingMatches && patterns.trainingMatches.length > 0);
+    
+    if (!hasTrainingSignals) {
+        console.log('🚫 No training signals detected, setting trainingJobs to 0');
+        result.config.trainingJobs = 0;
+    } else {
+        console.log('✅ Training signals detected:', {
+            training: patterns.problems.training,
+            finetuning: patterns.problems.finetuning, 
+            research: patterns.problems.research,
+            trainingMatches: patterns.trainingMatches.length
+        });
+        
+        // If training is detected but AI returned 0, set reasonable default
+        if (result.config.trainingJobs === 0) {
+            result.config.trainingJobs = patterns.environment === 'research' ? 2 : 1;
+            console.log('🔧 AI returned 0 training jobs despite training signals, correcting to:', result.config.trainingJobs);
+        }
+    }
+    
+    // Ensure total doesn't exceed H100 limits
+    const total = result.config.inferenceJobs + result.config.trainingJobs;
+    if (total > 7) {
+        // Prioritize inference for production, training for research
+        if (patterns.environment === 'research') {
+            result.config.inferenceJobs = Math.min(result.config.inferenceJobs, 3);
+            result.config.trainingJobs = Math.min(7 - result.config.inferenceJobs, 4);
+        } else {
+            result.config.trainingJobs = Math.min(result.config.trainingJobs, 2);
+            result.config.inferenceJobs = Math.min(7 - result.config.trainingJobs, 5);
+        }
+    }
+    
+    // Validate memory requirement
+    const validMemory = ['auto', '10', '20', '40'];
+    if (!validMemory.includes(result.config.memoryReq)) {
+        result.config.memoryReq = 'auto';
+    }
+    
+    // Validate environment
+    const validEnv = ['production', 'development', 'research'];
+    if (!validEnv.includes(result.config.environment)) {
+        result.config.environment = patterns.environment;
+    }
+    
+    // Ensure reasoning exists
+    if (!result.reasoning || result.reasoning.length < 20) {
+        result.reasoning = `Based on your infrastructure needs, this configuration provides ${result.config.inferenceJobs} inference endpoints and ${result.config.trainingJobs} training pipelines with proper resource isolation.`;
+    }
+    
+    return result;
+}
+
+/**
+ * Generate realistic commands based on validated configuration
+ */
+function generateRealisticCommands(config) {
+    const instances = [];
+    
+    // Add inference instances (smaller for better isolation)
+    for (let i = 0; i < config.inferenceJobs; i++) {
+        if (config.memoryReq === '40') {
+            instances.push('2g.20gb');
+        } else if (config.memoryReq === '20') {
+            instances.push('2g.20gb');
+        } else {
+            instances.push('1g.10gb');
+        }
+    }
+    
+    // Add training instances (larger for better performance)
+    for (let i = 0; i < config.trainingJobs; i++) {
+        if (config.memoryReq === '10') {
+            instances.push('2g.20gb');
+        } else if (config.memoryReq === '20') {
+            instances.push('3g.40gb');
+        } else {
+            instances.push('3g.40gb');
+        }
+    }
+    
+    return `# Disable existing MIG configuration
+sudo nvidia-smi -mig 0
+
+# Enable MIG mode
+sudo nvidia-smi -mig 1
+
+# Create optimized MIG instances for your workload
+sudo nvidia-smi mig -cgi ${instances.join(',')} -C
+
+# Verify configuration
+nvidia-smi mig -lgip
+
+# List available compute instances
+nvidia-smi mig -lcip`;
+}
+
+/**
+ * Calculate actual memory allocation based on config (matches generateRealisticCommands exactly)
+ */
+function calculateActualMemoryFromConfig(config) {
+    let inferenceMemory = 0;
+    let trainingMemory = 0;
+    
+    // Match the logic from generateRealisticCommands() exactly
+    for (let i = 0; i < config.inferenceJobs; i++) {
+        if (config.memoryReq === '40') {
+            inferenceMemory += 20; // 2g.20gb
+        } else if (config.memoryReq === '20') {
+            inferenceMemory += 20; // 2g.20gb
+        } else {
+            inferenceMemory += 10; // 1g.10gb (default for inference)
+        }
+    }
+    
+    for (let i = 0; i < config.trainingJobs; i++) {
+        if (config.memoryReq === '10') {
+            trainingMemory += 20; // 2g.20gb
+        } else {
+            trainingMemory += 40; // 3g.40gb (default for training)
+        }
+    }
+    
+    return inferenceMemory + trainingMemory;
+}
+
+/**
+ * Show analysis explanation with contextual information
+ */
+function showAnalysisExplanation(reasoning, originalIssue) {
+    const explanation = document.createElement('div');
+    explanation.className = 'analysis-explanation';
+    explanation.innerHTML = `
+        <div class="analysis-card">
+            <h4>🎯 AI Infrastructure Analysis</h4>
+            <div class="analysis-summary">
+                <strong>Your Issue:</strong> "${originalIssue.length > 100 ? originalIssue.substring(0, 100) + '...' : originalIssue}"
+            </div>
+            <div class="analysis-reasoning">
+                <strong>Solution Rationale:</strong> ${reasoning}
+            </div>
+            <div class="analysis-action">
+                ✅ Form inputs have been automatically configured. Configuration details are shown below.
+            </div>
+        </div>
+    `;
+    
+    form.insertAdjacentElement('afterend', explanation);
+    
+    // Remove after 8 seconds
+    setTimeout(() => {
+        explanation.remove();
+    }, 8000);
 }
 
 /**
@@ -436,9 +823,30 @@ function displayResults(data, config) {
         return;
     }
 
-    // Set configuration badge
-    const totalMemory = data.resources?.memory_total || `${config.totalJobs * 20}GB`;
-    configBadge.textContent = `${config.totalJobs} Instances • ${totalMemory}`;
+    // Calculate total memory from enhanced resources if available
+    let totalMemory;
+    if (data.resources && data.resources.summary && data.resources.summary.allocated_memory) {
+        totalMemory = data.resources.summary.allocated_memory;
+        console.log('📊 Using enhanced resource allocation:', totalMemory);
+    } else if (data.resources && data.resources.memory_total) {
+        // Validate AI response against actual command generation
+        const calculatedMemory = calculateActualMemoryFromConfig(config);
+        console.log('🔍 AI returned memory_total:', data.resources.memory_total);
+        console.log('🧮 Calculated actual memory:', calculatedMemory + 'GB');
+        
+        // FORCE use calculated value to ensure accuracy
+        totalMemory = `${calculatedMemory}GB`;
+        console.log('✅ Using calculated memory instead:', totalMemory);
+    } else {
+        // Calculate based on actual MIG configuration that matches generateRealisticCommands()
+        const calculatedMemory = calculateActualMemoryFromConfig(config);
+        totalMemory = `${calculatedMemory}GB`;
+        console.log('🔧 Fallback calculation:', totalMemory);
+    }
+
+    // Set configuration badge with proper validation
+    const totalJobs = config.totalJobs || (config.inferenceJobs + config.trainingJobs);
+    configBadge.textContent = `${totalJobs} Instances • ${totalMemory}`;
     configBadge.className = 'config-badge';
 
     // Display strategy explanation
@@ -596,15 +1004,51 @@ function generateResourceAllocation(config) {
     const totalMemory = 80; // H100 80GB
     const totalComputeUnits = 7; // H100 MIG instances
     
-    // Calculate memory per service type
-    const inferenceMemoryPerJob = config.inferenceJobs > 0 ? 
-        Math.floor((totalMemory * 0.6) / config.inferenceJobs) : 0;
-    const trainingMemoryPerJob = config.trainingJobs > 0 ? 
-        Math.floor((totalMemory * 0.35) / config.trainingJobs) : 0;
+    // Calculate memory per service type - MATCH the actual MIG command generation logic
+    let inferenceMemoryPerJob = 0;
+    let trainingMemoryPerJob = 0;
     
-    // Calculate compute allocation
-    const inferenceComputeUnits = Math.min(config.inferenceJobs, Math.floor(totalComputeUnits * 0.6));
-    const trainingComputeUnits = Math.min(config.trainingJobs, Math.floor(totalComputeUnits * 0.4));
+    // Match generateRealisticCommands() exactly
+    if (config.inferenceJobs > 0) {
+        if (config.memoryReq === '40') {
+            inferenceMemoryPerJob = 20; // 2g.20gb
+        } else if (config.memoryReq === '20') {
+            inferenceMemoryPerJob = 20; // 2g.20gb
+        } else {
+            inferenceMemoryPerJob = 10; // 1g.10gb (default for inference)
+        }
+    }
+    
+    if (config.trainingJobs > 0) {
+        if (config.memoryReq === '10') {
+            trainingMemoryPerJob = 20; // 2g.20gb
+        } else {
+            trainingMemoryPerJob = 40; // 3g.40gb (default for training)
+        }
+    }
+    
+    // Calculate compute allocation - match actual MIG profiles
+    let inferenceComputeUnits = 0;
+    let trainingComputeUnits = 0;
+    
+    // Calculate based on actual MIG profiles used
+    for (let i = 0; i < config.inferenceJobs; i++) {
+        if (config.memoryReq === '40') {
+            inferenceComputeUnits += 2; // 2g.20gb = 2 compute units
+        } else if (config.memoryReq === '20') {
+            inferenceComputeUnits += 2; // 2g.20gb = 2 compute units  
+        } else {
+            inferenceComputeUnits += 1; // 1g.10gb = 1 compute unit
+        }
+    }
+    
+    for (let i = 0; i < config.trainingJobs; i++) {
+        if (config.memoryReq === '10') {
+            trainingComputeUnits += 2; // 2g.20gb = 2 compute units
+        } else {
+            trainingComputeUnits += 3; // 3g.40gb = 3 compute units
+        }
+    }
     
     // Performance estimates
     const inferenceTokensPerSecond = inferenceMemoryPerJob > 20 ? 150 : inferenceMemoryPerJob > 10 ? 80 : 40;
@@ -795,9 +1239,89 @@ function calculateHourlyCost(config) {
  * Create visual resource breakdown
  */
 function createResourceBreakdown(resources, config) {
-    const memoryTotal = resources?.memory_total || 'Unknown';
-    const computeUnits = resources?.compute_units || 'Unknown';
-    const efficiency = resources?.efficiency_score || 'N/A';
+    let memoryTotal, computeUnits, efficiency;
+    
+    // Handle enhanced resource allocation object
+    if (resources && resources.summary) {
+        memoryTotal = resources.summary.allocated_memory || 'Unknown';
+        computeUnits = resources.summary.compute_units_used || 'Unknown';
+        efficiency = resources.summary.estimated_utilization || 'N/A';
+    } 
+    // Handle simple resource object - but validate against actual config
+    else if (resources) {
+        // Calculate actual memory to ensure accuracy
+        const actualMemory = calculateActualMemoryFromConfig(config);
+        console.log('🔍 Resource breakdown - AI returned memory_total:', resources.memory_total);
+        console.log('🧮 Resource breakdown - calculated actual:', actualMemory + 'GB');
+        
+        memoryTotal = `${actualMemory}GB`; // Use calculated value for accuracy
+        
+        // Calculate correct compute units based on actual MIG profiles
+        let totalComputeUnits = 0;
+        for (let i = 0; i < config.inferenceJobs; i++) {
+            if (config.memoryReq === '40') {
+                totalComputeUnits += 2; // 2g.20gb = 2 compute units
+            } else if (config.memoryReq === '20') {
+                totalComputeUnits += 2; // 2g.20gb = 2 compute units  
+            } else {
+                totalComputeUnits += 1; // 1g.10gb = 1 compute unit
+            }
+        }
+        
+        for (let i = 0; i < config.trainingJobs; i++) {
+            if (config.memoryReq === '10') {
+                totalComputeUnits += 2; // 2g.20gb = 2 compute units
+            } else {
+                totalComputeUnits += 3; // 3g.40gb = 3 compute units
+            }
+        }
+        
+        // Cap at maximum 7 compute units (H100 limit)
+        totalComputeUnits = Math.min(totalComputeUnits, 7);
+        
+        computeUnits = `${totalComputeUnits}/7`;
+        efficiency = resources.efficiency_score || 'N/A';
+        
+        console.log('✅ Resource breakdown using:', memoryTotal);
+    }
+    // Fallback calculation - calculate based on actual MIG instance allocations
+    else {
+        // Calculate realistic MIG instance allocation
+        let totalAllocatedMemory = 0;
+        let totalComputeUnits = 0;
+        
+        // For inference jobs - match generateRealisticCommands exactly
+        for (let i = 0; i < config.inferenceJobs; i++) {
+            if (config.memoryReq === '40') {
+                totalAllocatedMemory += 20; // 2g.20gb
+                totalComputeUnits += 2;
+            } else if (config.memoryReq === '20') {
+                totalAllocatedMemory += 20; // 2g.20gb
+                totalComputeUnits += 2;
+            } else {
+                totalAllocatedMemory += 10; // 1g.10gb
+                totalComputeUnits += 1;
+            }
+        }
+        
+        // For training jobs - typically use larger instances
+        for (let i = 0; i < config.trainingJobs; i++) {
+            if (config.memoryReq === '10') {
+                totalAllocatedMemory += 20; // 2g.20gb
+                totalComputeUnits += 2;
+            } else {
+                totalAllocatedMemory += 40; // 3g.40gb
+                totalComputeUnits += 3;
+            }
+        }
+        
+        memoryTotal = `${totalAllocatedMemory}GB`;
+        computeUnits = `${totalComputeUnits}/7`;
+        
+        // Calculate efficiency based on actual utilization
+        const utilizationRate = (totalAllocatedMemory / 80) * 100;
+        efficiency = `${Math.round(utilizationRate)}%`;
+    }
 
     resourceBreakdown.innerHTML = `
         <div class="resource-item">
